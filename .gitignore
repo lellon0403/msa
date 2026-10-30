@@ -1,0 +1,15 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build caches and editor files
+**/.gradle/
+**/build/
+**/.idea/
+**/.vscode/
+*.log
+.DS_Store
+Thumbs.db
