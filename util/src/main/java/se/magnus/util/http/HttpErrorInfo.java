@@ -4,10 +4,10 @@ import java.time.ZonedDateTime;
 import org.springframework.http.HttpStatus;
 
 public class HttpErrorInfo {
-  private final ZonedDateTime timestamp;
-  private final String path;
-  private final HttpStatus httpStatus;
-  private final String message;
+  private ZonedDateTime timestamp;
+  private String path;
+  private HttpStatus httpStatus;
+  private String message;
 
   public HttpErrorInfo() {
     timestamp = null;

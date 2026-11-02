@@ -1,17 +1,35 @@
 package se.magnus.microservices.composite.product.services;
 
-import org.springframework.stereotype.Component;
-import se.magnus.api.core.product.ProductService;
-import se.magnus.api.core.recommendation.RecommendationService;
-import se.magnus.api.core.review.ReviewService;
-import org.springframework.web.client.RestTemplate;
-import tools.jackson.databind.ObjectMapper;
+import static org.springframework.http.HttpMethod.GET;
+
+import java.util.ArrayList;
+import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.RestTemplate;
 import se.magnus.api.core.product.Product;
+import se.magnus.api.core.product.ProductService;
+import se.magnus.api.core.recommendation.Recommendation;
+import se.magnus.api.core.recommendation.RecommendationService;
+import se.magnus.api.core.review.Review;
+import se.magnus.api.core.review.ReviewService;
+import se.magnus.api.exceptions.InvalidInputException;
+import se.magnus.api.exceptions.NotFoundException;
+import se.magnus.util.http.HttpErrorInfo;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class ProductCompositeIntegration
         implements ProductService, RecommendationService, ReviewService {
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(ProductCompositeIntegration.class);
 
     private final RestTemplate restTemplate;
     private final ObjectMapper mapper;
@@ -19,7 +37,6 @@ public class ProductCompositeIntegration
     private final String productServiceUrl;
     private final String recommendationServiceUrl;
     private final String reviewServiceUrl;
-
 
     public ProductCompositeIntegration(
             RestTemplate restTemplate,
@@ -46,22 +63,119 @@ public class ProductCompositeIntegration
         this.restTemplate = restTemplate;
         this.mapper = mapper;
 
-        productServiceUrl = "http://" + productServiceHost + ":" +
-                productServicePort + "/product/";
+        productServiceUrl = "http://" + productServiceHost + ":"
+                + productServicePort + "/product/";
 
-        recommendationServiceUrl = "http://" + recommendationServiceHost + ":" +
-                recommendationServicePort + "/recommendation?productId=";
+        recommendationServiceUrl = "http://" + recommendationServiceHost + ":"
+                + recommendationServicePort + "/recommendation?productId=";
 
-        reviewServiceUrl = "http://" + reviewServiceHost + ":" +
-                reviewServicePort + "/review?productId=";
+        reviewServiceUrl = "http://" + reviewServiceHost + ":"
+                + reviewServicePort + "/review?productId=";
     }
 
-    // 75쪽 3번: getProduct() 메서드는 이 아래에 추가하세요. (클래스의 마지막 중괄호 앞)
+    @Override
     public Product getProduct(int productId) {
-        String url = productServiceUrl + productId;
-        Product product = restTemplate.getForObject(url, Product.class);
-        return product;
+        try {
+            String url = productServiceUrl + productId;
+            LOG.debug("Will call getProduct API on URL: {}", url);
+
+            Product product = restTemplate.getForObject(url, Product.class);
+            LOG.debug("Found a product with id: {}", product.getProductId());
+
+            return product;
+
+        } catch (HttpClientErrorException ex) {
+            switch (HttpStatus.resolve(ex.getStatusCode().value())) {
+                case NOT_FOUND:
+                    throw new NotFoundException(getErrorMessage(ex));
+
+                case UNPROCESSABLE_CONTENT:
+                    throw new InvalidInputException(getErrorMessage(ex));
+
+                default:
+                    LOG.warn(
+                            "Got an unexpected HTTP error: {}, will rethrow it",
+                            ex.getStatusCode()
+                    );
+                    LOG.warn("Error body: {}", ex.getResponseBodyAsString());
+                    throw ex;
+            }
+        }
     }
 
+    private String getErrorMessage(HttpClientErrorException ex) {
+        try {
+            return mapper.readValue(
+                    ex.getResponseBodyAsString(),
+                    HttpErrorInfo.class
+            ).getMessage();
 
+        } catch (JacksonException jsonEx) {
+            return ex.getMessage();
+        }
+    }
+
+    @Override
+    public List<Recommendation> getRecommendations(int productId) {
+        try {
+            String url = recommendationServiceUrl + productId;
+            LOG.debug("Will call getRecommendations API on URL: {}", url);
+
+            List<Recommendation> recommendations = restTemplate.exchange(
+                    url,
+                    GET,
+                    null,
+                    new ParameterizedTypeReference<List<Recommendation>>() {}
+            ).getBody();
+
+            LOG.debug(
+                    "Found {} recommendations for a product with id: {}",
+                    recommendations.size(),
+                    productId
+            );
+
+            return recommendations;
+
+        } catch (Exception ex) {
+            LOG.warn(
+                    "Got an exception while requesting recommendations, "
+                            + "return zero recommendations: {}",
+                    ex.getMessage()
+            );
+
+            return new ArrayList<>();
+        }
+    }
+
+    @Override
+    public List<Review> getReviews(int productId) {
+        try {
+            String url = reviewServiceUrl + productId;
+            LOG.debug("Will call getReviews API on URL: {}", url);
+
+            List<Review> reviews = restTemplate.exchange(
+                    url,
+                    GET,
+                    null,
+                    new ParameterizedTypeReference<List<Review>>() {}
+            ).getBody();
+
+            LOG.debug(
+                    "Found {} reviews for a product with id: {}",
+                    reviews.size(),
+                    productId
+            );
+
+            return reviews;
+
+        } catch (Exception ex) {
+            LOG.warn(
+                    "Got an exception while requesting reviews, "
+                            + "return zero reviews: {}",
+                    ex.getMessage()
+            );
+
+            return new ArrayList<>();
+        }
+    }
 }
