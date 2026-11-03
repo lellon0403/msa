@@ -1,10 +1,13 @@
 package se.magnus.api.core.product;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class Product {
-  private int productId;
-  private String name;
-  private int weight;
-  private String serviceAddress;
+  private final int productId;
+  private final String name;
+  private final int weight;
+  private final String serviceAddress;
 
   public Product() {
     productId = 0;
@@ -13,7 +16,12 @@ public class Product {
     serviceAddress = null;
   }
 
-  public Product(int productId, String name, int weight, String serviceAddress) {
+  @JsonCreator
+  public Product(
+      @JsonProperty("productId") int productId,
+      @JsonProperty("name") String name,
+      @JsonProperty("weight") int weight,
+      @JsonProperty("serviceAddress") String serviceAddress) {
     this.productId = productId;
     this.name = name;
     this.weight = weight;
