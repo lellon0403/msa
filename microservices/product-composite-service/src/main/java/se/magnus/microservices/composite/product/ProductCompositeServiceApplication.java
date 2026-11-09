@@ -51,7 +51,7 @@ public class ProductCompositeServiceApplication {
 		SpringApplication.run(ProductCompositeServiceApplication.class, args);
 	}
 
-	@Bean
+ 	@Bean
 	RestTemplate restTemplate() {
 		return new RestTemplate();
 	}
