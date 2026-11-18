@@ -4,11 +4,11 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.testcontainers.mongodb.MongoDBContainer;
 
 public abstract class MongoDbTestBase {
-    @ServiceConnection
-    private static final MongoDBContainer database =
-            new MongoDBContainer("mongo:8.0.5");
+  @ServiceConnection
+  private static final MongoDBContainer database =
+      new MongoDBContainer("mongo:8.0.5");
 
-    static {
-        database.start();
-    }
+  static {
+    database.start();
+  }
 }

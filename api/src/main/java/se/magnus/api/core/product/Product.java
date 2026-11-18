@@ -18,10 +18,10 @@ public class Product {
 
   @JsonCreator
   public Product(
-          @JsonProperty("productId") int productId,
-          @JsonProperty("name") String name,
-          @JsonProperty("weight") int weight,
-          @JsonProperty("serviceAddress") String serviceAddress) {
+      @JsonProperty("productId") int productId,
+      @JsonProperty("name") String name,
+      @JsonProperty("weight") int weight,
+      @JsonProperty("serviceAddress") String serviceAddress) {
     this.productId = productId;
     this.name = name;
     this.weight = weight;

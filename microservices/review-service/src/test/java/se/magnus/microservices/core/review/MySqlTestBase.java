@@ -5,11 +5,11 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.testcontainers.mysql.MySQLContainer;
 
 public abstract class MySqlTestBase {
-    @ServiceConnection
-    private static final MySQLContainer database =
-            new MySQLContainer("mysql:9.2.0").withStartupTimeout(Duration.ofSeconds(300));
+  @ServiceConnection
+  private static final MySQLContainer database =
+      new MySQLContainer("mysql:9.2.0").withStartupTimeout(Duration.ofSeconds(300));
 
-    static {
-        database.start();
-    }
+  static {
+    database.start();
+  }
 }

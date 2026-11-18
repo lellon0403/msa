@@ -78,6 +78,89 @@ function waitForService() {
   echo "DONE, continues..."
 }
 
+function waitForMessageProcessing() {
+  local productId=$1
+  local expectedRecs=$2
+  local expectedRevs=$3
+  local result httpCode body n=0
+  echo -n "Wait for messages: productId=$productId... "
+  while true
+  do
+    result=$(curl -s --connect-timeout 5 --max-time 10 -w "%{http_code}" "http://$HOST:$PORT/product-composite/$productId") || result=000
+    httpCode="${result:(-3)}"
+    body="${result%???}"
+    if [ "$httpCode" = "200" ] && echo "$body" | jq -e --argjson id "$productId" --argjson recs "$expectedRecs" --argjson revs "$expectedRevs" \
+      '.productId == $id and (.recommendations | length) == $recs and (.reviews | length) == $revs' > /dev/null
+    then
+      echo "DONE, continues..."
+      return 0
+    fi
+    if [[ "$httpCode" != "200" && "$httpCode" != "404" && "$httpCode" != "000" ]]
+    then
+      echo "Unexpected HTTP Code: $httpCode, $body"
+      exit 1
+    fi
+    n=$((n + 1))
+    if [[ $n == 100 ]]
+    then
+      echo "Give up: productId=$productId, HTTP Code: $httpCode, $body"
+      exit 1
+    fi
+    sleep 3
+    echo -n ", retry #$n "
+  done
+}
+
+function waitForDeletion() {
+  local productId=$1
+  local result httpCode n=0
+  echo -n "Wait for deletion: productId=$productId... "
+  while true
+  do
+    result=$(curl -s --connect-timeout 5 --max-time 10 -w "%{http_code}" "http://$HOST:$PORT/product-composite/$productId") || result=000
+    httpCode="${result:(-3)}"
+    if [ "$httpCode" = "404" ]
+    then
+      echo "DONE, continues..."
+      return 0
+    fi
+    if [[ "$httpCode" != "200" && "$httpCode" != "000" ]]
+    then
+      echo "Unexpected HTTP Code: $httpCode, ${result%???}"
+      exit 1
+    fi
+    n=$((n + 1))
+    if [[ $n == 100 ]]
+    then
+      echo "Give up: deletion of productId=$productId, $result"
+      exit 1
+    fi
+    sleep 3
+    echo -n ", retry #$n "
+  done
+}
+
+function recreateComposite() {
+  local productId=$1
+  local composite=$2
+  assertCurl 202 "curl -s -X DELETE http://$HOST:$PORT/product-composite/$productId"
+  waitForDeletion "$productId"
+  assertCurl 202 "curl -s -X POST http://$HOST:$PORT/product-composite -H 'Content-Type: application/json' --data '$composite'"
+}
+
+function setupTestdata() {
+  local body
+  body='{"productId":'"$PROD_ID_REVS_RECS"',"name":"product 1","weight":1,"recommendations":[{"recommendationId":1,"author":"author 1","rate":1,"content":"content 1"},{"recommendationId":2,"author":"author 2","rate":2,"content":"content 2"},{"recommendationId":3,"author":"author 3","rate":3,"content":"content 3"}],"reviews":[{"reviewId":1,"author":"author 1","subject":"subject 1","content":"content 1"},{"reviewId":2,"author":"author 2","subject":"subject 2","content":"content 2"},{"reviewId":3,"author":"author 3","subject":"subject 3","content":"content 3"}]}'
+  recreateComposite "$PROD_ID_REVS_RECS" "$body"
+
+  body='{"productId":'"$PROD_ID_NO_RECS"',"name":"product 113","weight":113,"reviews":[{"reviewId":1,"author":"author 1","subject":"subject 1","content":"content 1"},{"reviewId":2,"author":"author 2","subject":"subject 2","content":"content 2"},{"reviewId":3,"author":"author 3","subject":"subject 3","content":"content 3"}]}'
+  recreateComposite "$PROD_ID_NO_RECS" "$body"
+
+  body='{"productId":'"$PROD_ID_NO_REVS"',"name":"product 213","weight":213,"recommendations":[{"recommendationId":1,"author":"author 1","rate":1,"content":"content 1"},{"recommendationId":2,"author":"author 2","rate":2,"content":"content 2"},{"recommendationId":3,"author":"author 3","rate":3,"content":"content 3"}]}'
+  recreateComposite "$PROD_ID_NO_REVS" "$body"
+
+}
+
 set -e
 
 echo "Start Tests:" `date`
@@ -94,7 +177,17 @@ then
   docker compose up -d
 fi
 
-waitForService curl http://$HOST:$PORT/product-composite/$PROD_ID_REVS_RECS
+waitForService curl http://$HOST:$PORT/actuator/health
+assertCurl 202 "curl -s -X DELETE http://$HOST:$PORT/product-composite/$PROD_ID_NOT_FOUND"
+waitForDeletion "$PROD_ID_NOT_FOUND"
+# Verify access to Eureka and that all five applications (including the gateway) are registered in Eureka
+assertCurl 200 "curl -H "accept:application/json" $HOST:$PORT/eureka/api/apps -s"
+assertEqual 5 $(echo $RESPONSE | jq ".applications.application | length")
+
+setupTestdata
+waitForMessageProcessing "$PROD_ID_REVS_RECS" 3 3
+waitForMessageProcessing "$PROD_ID_NO_RECS" 0 3
+waitForMessageProcessing "$PROD_ID_NO_REVS" 3 0
 
 # Verify that a normal request works, expect three recommendations and three reviews
 assertCurl 200 "curl http://$HOST:$PORT/product-composite/$PROD_ID_REVS_RECS -s"
@@ -137,6 +230,11 @@ assertEqual "3.1.0" "$(echo $RESPONSE | jq -r .openapi)"
 assertEqual "http://$HOST:$PORT" "$(echo $RESPONSE | jq -r '.servers[0].url')"
 assertCurl 200 "curl -s  http://$HOST:$PORT/openapi/v3/api-docs.yaml"
 
+# Verify asynchronous deletion after the read and OpenAPI tests
+assertCurl 202 "curl -s -X DELETE http://$HOST:$PORT/product-composite/$PROD_ID_REVS_RECS"
+waitForDeletion "$PROD_ID_REVS_RECS"
+assertCurl 404 "curl -s http://$HOST:$PORT/product-composite/$PROD_ID_REVS_RECS"
+assertEqual "No product found for productId: $PROD_ID_REVS_RECS" "$(echo $RESPONSE | jq -r .message)"
 
 if [[ $@ == *"stop"* ]]
 then

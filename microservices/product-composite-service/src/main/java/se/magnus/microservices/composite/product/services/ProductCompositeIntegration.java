@@ -1,17 +1,22 @@
 package se.magnus.microservices.composite.product.services;
 
-import static org.springframework.http.HttpMethod.GET;
+import static java.util.logging.Level.FINE;
+import static se.magnus.api.event.Event.Type.CREATE;
+import static se.magnus.api.event.Event.Type.DELETE;
 
-import java.util.ArrayList;
-import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cloud.stream.function.StreamBridge;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
+import reactor.core.scheduler.Scheduler;
+import se.magnus.api.event.Event;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import se.magnus.api.core.product.Product;
 import se.magnus.api.core.product.ProductService;
 import se.magnus.api.core.recommendation.Recommendation;
@@ -25,157 +30,114 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
 @Component
-public class ProductCompositeIntegration
-        implements ProductService, RecommendationService, ReviewService {
+public class ProductCompositeIntegration implements ProductService, RecommendationService, ReviewService {
+  private static final Logger LOG = LoggerFactory.getLogger(ProductCompositeIntegration.class);
+  private static final String PRODUCT_SERVICE_URL = "http://product";
+  private static final String RECOMMENDATION_SERVICE_URL = "http://recommendation";
+  private static final String REVIEW_SERVICE_URL = "http://review";
 
-    private static final Logger LOG =
-            LoggerFactory.getLogger(ProductCompositeIntegration.class);
+  private final StreamBridge streamBridge;
+  private final Scheduler publishEventScheduler;
+  private final WebClient webClient;
+  private final ObjectMapper mapper;
 
-    private final RestTemplate restTemplate;
-    private final ObjectMapper mapper;
+  public ProductCompositeIntegration(StreamBridge streamBridge,
+      @Qualifier("publishEventScheduler") Scheduler publishEventScheduler,
+      WebClient.Builder webClientBuilder, ObjectMapper mapper) {
+    this.streamBridge = streamBridge;
+    this.publishEventScheduler = publishEventScheduler;
+    this.webClient = webClientBuilder.build();
+    this.mapper = mapper;
+  }
 
-    private final String productServiceUrl;
-    private final String recommendationServiceUrl;
-    private final String reviewServiceUrl;
+  @Override
+  public Mono<Product> getProduct(int productId) {
+    String url = PRODUCT_SERVICE_URL + "/product/" + productId;
+    return webClient.get().uri(url).retrieve().bodyToMono(Product.class)
+      .log(LOG.getName(), FINE)
+      .onErrorMap(WebClientResponseException.class, this::handleException);
+  }
 
-    public ProductCompositeIntegration(
-            RestTemplate restTemplate,
-            ObjectMapper mapper,
+  @Override
+  public Flux<Recommendation> getRecommendations(int productId) {
+    String url = RECOMMENDATION_SERVICE_URL + "/recommendation?productId=" + productId;
+    return webClient.get().uri(url).retrieve().bodyToFlux(Recommendation.class)
+      .log(LOG.getName(), FINE)
+      .onErrorResume(error -> Flux.empty());
+  }
 
-            @Value("${app.product-service.host}")
-            String productServiceHost,
+  @Override
+  public Flux<Review> getReviews(int productId) {
+    String url = REVIEW_SERVICE_URL + "/review?productId=" + productId;
+    return webClient.get().uri(url).retrieve().bodyToFlux(Review.class)
+      .log(LOG.getName(), FINE)
+      .onErrorResume(error -> Flux.empty());
+  }
 
-            @Value("${app.product-service.port}")
-            int productServicePort,
+  @Override
+  public Mono<Product> createProduct(Product body) {
+    return Mono.fromCallable(() -> {
+      sendMessage("products-out-0", new Event<>(CREATE, body.getProductId(), body));
+      return body;
+    }).subscribeOn(publishEventScheduler);
+  }
 
-            @Value("${app.recommendation-service.host}")
-            String recommendationServiceHost,
+  @Override
+  public Mono<Void> deleteProduct(int productId) {
+    return Mono.fromRunnable(() ->
+      sendMessage("products-out-0", new Event<>(DELETE, productId, null)))
+      .subscribeOn(publishEventScheduler).then();
+  }
 
-            @Value("${app.recommendation-service.port}")
-            int recommendationServicePort,
+  @Override
+  public Mono<Recommendation> createRecommendation(Recommendation body) {
+    return Mono.fromCallable(() -> {
+      sendMessage("recommendations-out-0", new Event<>(CREATE, body.getProductId(), body));
+      return body;
+    }).subscribeOn(publishEventScheduler);
+  }
 
-            @Value("${app.review-service.host}")
-            String reviewServiceHost,
+  @Override
+  public Mono<Void> deleteRecommendations(int productId) {
+    return Mono.fromRunnable(() ->
+      sendMessage("recommendations-out-0", new Event<>(DELETE, productId, null)))
+      .subscribeOn(publishEventScheduler).then();
+  }
 
-            @Value("${app.review-service.port}")
-            int reviewServicePort
-    ) {
-        this.restTemplate = restTemplate;
-        this.mapper = mapper;
+  @Override
+  public Mono<Review> createReview(Review body) {
+    return Mono.fromCallable(() -> {
+      sendMessage("reviews-out-0", new Event<>(CREATE, body.getProductId(), body));
+      return body;
+    }).subscribeOn(publishEventScheduler);
+  }
 
-        productServiceUrl = "http://" + productServiceHost + ":"
-                + productServicePort + "/product/";
+  @Override
+  public Mono<Void> deleteReviews(int productId) {
+    return Mono.fromRunnable(() ->
+      sendMessage("reviews-out-0", new Event<>(DELETE, productId, null)))
+      .subscribeOn(publishEventScheduler).then();
+  }
 
-        recommendationServiceUrl = "http://" + recommendationServiceHost + ":"
-                + recommendationServicePort + "/recommendation?productId=";
+  private void sendMessage(String bindingName, Event<?, ?> event) {
+    Message<Event<?, ?>> message = MessageBuilder.<Event<?, ?>>withPayload(event)
+      .setHeader("partitionKey", event.getKey())
+      .build();
+    streamBridge.send(bindingName, message);
+  }
 
-        reviewServiceUrl = "http://" + reviewServiceHost + ":"
-                + reviewServicePort + "/review?productId=";
+  private Throwable handleException(WebClientResponseException ex) {
+    int status = ex.getStatusCode().value();
+    if (status == 404) return new NotFoundException(getErrorMessage(ex));
+    if (status == 422) return new InvalidInputException(getErrorMessage(ex));
+    return ex;
+  }
+
+  private String getErrorMessage(WebClientResponseException ex) {
+    try {
+      return mapper.readValue(ex.getResponseBodyAsString(), HttpErrorInfo.class).getMessage();
+    } catch (JacksonException jsonEx) {
+      return ex.getMessage();
     }
-
-    @Override
-    public Product getProduct(int productId) {
-        try {
-            String url = productServiceUrl + productId;
-            LOG.debug("Will call getProduct API on URL: {}", url);
-
-            Product product = restTemplate.getForObject(url, Product.class);
-            LOG.debug("Found a product with id: {}", product.getProductId());
-
-            return product;
-
-        } catch (HttpClientErrorException ex) {
-            switch (HttpStatus.resolve(ex.getStatusCode().value())) {
-                case NOT_FOUND:
-                    throw new NotFoundException(getErrorMessage(ex));
-
-                case UNPROCESSABLE_CONTENT:
-                    throw new InvalidInputException(getErrorMessage(ex));
-
-                default:
-                    LOG.warn(
-                            "Got an unexpected HTTP error: {}, will rethrow it",
-                            ex.getStatusCode()
-                    );
-                    LOG.warn("Error body: {}", ex.getResponseBodyAsString());
-                    throw ex;
-            }
-        }
-    }
-
-    private String getErrorMessage(HttpClientErrorException ex) {
-        try {
-            return mapper.readValue(
-                    ex.getResponseBodyAsString(),
-                    HttpErrorInfo.class
-            ).getMessage();
-
-        } catch (JacksonException jsonEx) {
-            return ex.getMessage();
-        }
-    }
-
-    @Override
-    public List<Recommendation> getRecommendations(int productId) {
-        try {
-            String url = recommendationServiceUrl + productId;
-            LOG.debug("Will call getRecommendations API on URL: {}", url);
-
-            List<Recommendation> recommendations = restTemplate.exchange(
-                    url,
-                    GET,
-                    null,
-                    new ParameterizedTypeReference<List<Recommendation>>() {}
-            ).getBody();
-
-            LOG.debug(
-                    "Found {} recommendations for a product with id: {}",
-                    recommendations.size(),
-                    productId
-            );
-
-            return recommendations;
-
-        } catch (Exception ex) {
-            LOG.warn(
-                    "Got an exception while requesting recommendations, "
-                            + "return zero recommendations: {}",
-                    ex.getMessage()
-            );
-
-            return new ArrayList<>();
-        }
-    }
-
-    @Override
-    public List<Review> getReviews(int productId) {
-        try {
-            String url = reviewServiceUrl + productId;
-            LOG.debug("Will call getReviews API on URL: {}", url);
-
-            List<Review> reviews = restTemplate.exchange(
-                    url,
-                    GET,
-                    null,
-                    new ParameterizedTypeReference<List<Review>>() {}
-            ).getBody();
-
-            LOG.debug(
-                    "Found {} reviews for a product with id: {}",
-                    reviews.size(),
-                    productId
-            );
-
-            return reviews;
-
-        } catch (Exception ex) {
-            LOG.warn(
-                    "Got an exception while requesting reviews, "
-                            + "return zero reviews: {}",
-                    ex.getMessage()
-            );
-
-            return new ArrayList<>();
-        }
-    }
+  }
 }

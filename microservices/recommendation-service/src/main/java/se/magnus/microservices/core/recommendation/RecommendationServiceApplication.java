@@ -11,13 +11,13 @@ import org.springframework.context.annotation.ComponentScan;
 @ComponentScan("se.magnus")
 public class RecommendationServiceApplication {
 
-	private static final Logger LOG = LoggerFactory.getLogger(RecommendationServiceApplication.class);
+  private static final Logger LOG = LoggerFactory.getLogger(RecommendationServiceApplication.class);
 
 	public static void main(String[] args) {
 		ConfigurableApplicationContext ctx = SpringApplication.run(RecommendationServiceApplication.class, args);
-		String host = ctx.getEnvironment().getProperty("spring.mongodb.host", "localhost");
-		String port = ctx.getEnvironment().getProperty("spring.mongodb.port", "27017");
-		LOG.info("MongoDB connection settings: {}:{}", host, port);
+    String host = ctx.getEnvironment().getProperty("spring.mongodb.host", "localhost");
+    String port = ctx.getEnvironment().getProperty("spring.mongodb.port", "27017");
+    LOG.info("MongoDB connection settings: {}:{}", host, port);
 	}
 
 }

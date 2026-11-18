@@ -2,10 +2,15 @@ package se.magnus.microservices.composite.product;
 
 import static java.util.Collections.singletonList;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
+import static org.mockito.ArgumentMatchers.any;
 import static org.springframework.boot.test.context.SpringBootTest.WebEnvironment.RANDOM_PORT;
 import static org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,6 +18,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import se.magnus.api.composite.product.ProductAggregate;
+import se.magnus.api.composite.product.RecommendationSummary;
+import se.magnus.api.composite.product.ReviewSummary;
 import se.magnus.api.core.product.Product;
 import se.magnus.api.core.recommendation.Recommendation;
 import se.magnus.api.core.review.Review;
@@ -20,7 +28,7 @@ import se.magnus.api.exceptions.InvalidInputException;
 import se.magnus.api.exceptions.NotFoundException;
 import se.magnus.microservices.composite.product.services.ProductCompositeIntegration;
 
-@SpringBootTest(webEnvironment = RANDOM_PORT)
+@SpringBootTest(webEnvironment = RANDOM_PORT, properties = {"eureka.client.enabled=false"})
 @AutoConfigureWebTestClient
 class ProductCompositeServiceApplicationTests {
 
@@ -34,19 +42,32 @@ class ProductCompositeServiceApplicationTests {
 
 	@BeforeEach
 	void setUp() {
+        when(compositeIntegration.getRecommendations(org.mockito.ArgumentMatchers.anyInt())).thenReturn(Flux.empty());
+        when(compositeIntegration.getReviews(org.mockito.ArgumentMatchers.anyInt())).thenReturn(Flux.empty());
 
 		when(compositeIntegration.getProduct(PRODUCT_ID_OK))
-				.thenReturn(new Product(PRODUCT_ID_OK, "name", 1, "mock-address"));
+				.thenReturn(Mono.just(new Product(PRODUCT_ID_OK, "name", 1, "mock-address")));
 		when(compositeIntegration.getRecommendations(PRODUCT_ID_OK))
-				.thenReturn(singletonList(new Recommendation(PRODUCT_ID_OK, 1, "author", 1, "content", "mock address")));
+				.thenReturn(Flux.just(new Recommendation(PRODUCT_ID_OK, 1, "author", 1, "content", "mock address")));
 		when(compositeIntegration.getReviews(PRODUCT_ID_OK))
-				.thenReturn(singletonList(new Review(PRODUCT_ID_OK, 1, "author", "subject", "content", "mock address")));
+				.thenReturn(Flux.just(new Review(PRODUCT_ID_OK, 1, "author", "subject", "content", "mock address")));
+
+
+        when(compositeIntegration.createProduct(any(Product.class)))
+            .thenAnswer(invocation -> Mono.just(invocation.getArgument(0, Product.class)));
+        when(compositeIntegration.createRecommendation(any(Recommendation.class)))
+            .thenAnswer(invocation -> Mono.just(invocation.getArgument(0, Recommendation.class)));
+        when(compositeIntegration.createReview(any(Review.class)))
+            .thenAnswer(invocation -> Mono.just(invocation.getArgument(0, Review.class)));
+        when(compositeIntegration.deleteProduct(org.mockito.ArgumentMatchers.anyInt())).thenReturn(Mono.empty());
+        when(compositeIntegration.deleteRecommendations(org.mockito.ArgumentMatchers.anyInt())).thenReturn(Mono.empty());
+        when(compositeIntegration.deleteReviews(org.mockito.ArgumentMatchers.anyInt())).thenReturn(Mono.empty());
 
 		when(compositeIntegration.getProduct(PRODUCT_ID_NOT_FOUND))
-				.thenThrow(new NotFoundException("NOT FOUND: " + PRODUCT_ID_NOT_FOUND));
+				.thenReturn(Mono.error(new NotFoundException("NOT FOUND: " + PRODUCT_ID_NOT_FOUND)));
 
 		when(compositeIntegration.getProduct(PRODUCT_ID_INVALID))
-				.thenThrow(new InvalidInputException("INVALID: " + PRODUCT_ID_INVALID));
+				.thenReturn(Mono.error(new InvalidInputException("INVALID: " + PRODUCT_ID_INVALID)));
 	}
 
 	@Test
@@ -94,4 +115,46 @@ class ProductCompositeServiceApplicationTests {
 				.jsonPath("$.path").isEqualTo("/product-composite/" + PRODUCT_ID_INVALID)
 				.jsonPath("$.message").isEqualTo("INVALID: " + PRODUCT_ID_INVALID);
 	}
+
+    @Test
+    void createCompositeProduct1() {
+        ProductAggregate body = new ProductAggregate(1, "name", 1, null, null, null);
+        postAndVerifyProduct(body);
+        verify(compositeIntegration).createProduct(any(Product.class));
+    }
+
+    @Test
+    void createCompositeProduct2() {
+        ProductAggregate body = new ProductAggregate(1, "name", 1,
+            singletonList(new RecommendationSummary(1, "a", 1, "c")),
+            singletonList(new ReviewSummary(1, "a", "s", "c")), null);
+        postAndVerifyProduct(body);
+        verify(compositeIntegration).createProduct(any(Product.class));
+        verify(compositeIntegration).createRecommendation(any(Recommendation.class));
+        verify(compositeIntegration).createReview(any(Review.class));
+    }
+
+    @Test
+    void deleteCompositeProduct() {
+        ProductAggregate body = new ProductAggregate(1, "name", 1,
+            singletonList(new RecommendationSummary(1, "a", 1, "c")),
+            singletonList(new ReviewSummary(1, "a", "s", "c")), null);
+        postAndVerifyProduct(body);
+        deleteAndVerifyProduct(1);
+        deleteAndVerifyProduct(1);
+        verify(compositeIntegration, times(2)).deleteProduct(1);
+        verify(compositeIntegration, times(2)).deleteRecommendations(1);
+        verify(compositeIntegration, times(2)).deleteReviews(1);
+    }
+
+    private void postAndVerifyProduct(ProductAggregate body) {
+        client.post().uri("/product-composite")
+            .contentType(APPLICATION_JSON).bodyValue(body)
+            .exchange().expectStatus().isAccepted().expectBody().isEmpty();
+    }
+
+    private void deleteAndVerifyProduct(int productId) {
+        client.delete().uri("/product-composite/" + productId)
+            .exchange().expectStatus().isAccepted().expectBody().isEmpty();
+    }
 }

@@ -22,12 +22,12 @@ public class Review {
 
   @JsonCreator
   public Review(
-          @JsonProperty("productId") int productId,
-          @JsonProperty("reviewId") int reviewId,
-          @JsonProperty("author") String author,
-          @JsonProperty("subject") String subject,
-          @JsonProperty("content") String content,
-          @JsonProperty("serviceAddress") String serviceAddress) {
+      @JsonProperty("productId") int productId,
+      @JsonProperty("reviewId") int reviewId,
+      @JsonProperty("author") String author,
+      @JsonProperty("subject") String subject,
+      @JsonProperty("content") String content,
+      @JsonProperty("serviceAddress") String serviceAddress) {
 
     this.productId = productId;
     this.reviewId = reviewId;

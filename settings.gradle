@@ -14,3 +14,6 @@ include ':util'
 
 
 
+
+include ':spring-cloud:eureka-server'
+include ':spring-cloud:gateway'

@@ -1,94 +1,150 @@
 package se.magnus.microservices.core.recommendation;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.boot.test.context.SpringBootTest.WebEnvironment.RANDOM_PORT;
-import static org.springframework.http.HttpStatus.BAD_REQUEST;
-import static org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT;
+import static org.springframework.http.HttpStatus.*;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static se.magnus.api.event.Event.Type.CREATE;
+import static se.magnus.api.event.Event.Type.DELETE;
+
+import java.util.function.Consumer;
+import org.springframework.beans.factory.annotation.Qualifier;
+import se.magnus.api.event.Event;
+import se.magnus.api.exceptions.InvalidInputException;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import se.magnus.api.core.recommendation.Recommendation;
+import se.magnus.microservices.core.recommendation.persistence.RecommendationRepository;
 
-@SpringBootTest(webEnvironment = RANDOM_PORT)
+@SpringBootTest(webEnvironment = RANDOM_PORT,
+  properties = {
+    "spring.cloud.stream.function.autodetect=false",
+    "eureka.client.enabled=false"})
 @AutoConfigureWebTestClient
-class RecommendationServiceApplicationTests {
+class RecommendationServiceApplicationTests extends MongoDbTestBase {
 
-	@Autowired private WebTestClient client;
+  @Autowired
+  private WebTestClient client;
 
-	@Test
-	void getRecommendationsByProductId() {
+  @Autowired
+  private RecommendationRepository repository;
 
-		int productId = 1;
+  @Autowired
+  @Qualifier("messageProcessor")
+  private Consumer<Event<Integer, Recommendation>> messageProcessor;
 
-		client.get()
-				.uri("/recommendation?productId=" + productId)
-				.accept(APPLICATION_JSON)
-				.exchange()
-				.expectStatus().isOk()
-				.expectHeader().contentType(APPLICATION_JSON)
-				.expectBody()
-				.jsonPath("$.length()").isEqualTo(3)
-				.jsonPath("$[0].productId").isEqualTo(productId);
-	}
+  @BeforeEach
+  void setupDb() {
+    repository.deleteAll().block();
+  }
 
-	@Test
-	void getRecommendationsMissingParameter() {
+  @Test
+  void getRecommendationsByProductId() {
 
-		client.get()
-				.uri("/recommendation")
-				.accept(APPLICATION_JSON)
-				.exchange()
-				.expectStatus().isEqualTo(BAD_REQUEST)
-				.expectHeader().contentType(APPLICATION_JSON)
-				.expectBody()
-				.jsonPath("$.path").isEqualTo("/recommendation")
-				.jsonPath("$.message").isEqualTo("Required query parameter 'productId' is not present.");
-	}
+    int productId = 1;
 
-	@Test
-	void getRecommendationsInvalidParameter() {
+    sendCreateRecommendationEvent(productId, 1);
+    sendCreateRecommendationEvent(productId, 2);
+    sendCreateRecommendationEvent(productId, 3);
 
-		client.get()
-				.uri("/recommendation?productId=no-integer")
-				.accept(APPLICATION_JSON)
-				.exchange()
-				.expectStatus().isEqualTo(BAD_REQUEST)
-				.expectHeader().contentType(APPLICATION_JSON)
-				.expectBody()
-				.jsonPath("$.path").isEqualTo("/recommendation")
-				.jsonPath("$.message").isEqualTo("Type mismatch.");
-	}
+    assertEquals(3, repository.findByProductId(productId).collectList().block().size());
 
-	@Test
-	void getRecommendationsNotFound() {
+    getAndVerifyRecommendationsByProductId(productId, OK)
+      .jsonPath("$.length()").isEqualTo(3)
+      .jsonPath("$[2].productId").isEqualTo(productId)
+      .jsonPath("$[2].recommendationId").isEqualTo(3);
+  }
 
-		int productIdNotFound = 113;
+  @Test
+  void duplicateError() {
+    int productId = 1;
+    int recommendationId = 1;
+    sendCreateRecommendationEvent(productId, recommendationId);
+    assertEquals(1, (long) repository.count().block());
+    InvalidInputException ex = assertThrows(InvalidInputException.class,
+      () -> sendCreateRecommendationEvent(productId, recommendationId));
+    assertEquals("Duplicate key, Product Id: 1, Recommendation Id:1", ex.getMessage());
+    assertEquals(1, (long) repository.count().block());
+  }
 
-		client.get()
-				.uri("/recommendation?productId=" + productIdNotFound)
-				.accept(APPLICATION_JSON)
-				.exchange()
-				.expectStatus().isOk()
-				.expectHeader().contentType(APPLICATION_JSON)
-				.expectBody()
-				.jsonPath("$.length()").isEqualTo(0);
-	}
+  @Test
+  void deleteRecommendations() {
 
-	@Test
-	void getRecommendationsInvalidParameterNegativeValue() {
+    int productId = 1;
+    int recommendationId = 1;
 
-		int productIdInvalid = -1;
+    sendCreateRecommendationEvent(productId, recommendationId);
+    assertEquals(1, repository.findByProductId(productId).collectList().block().size());
 
-		client.get()
-				.uri("/recommendation?productId=" + productIdInvalid)
-				.accept(APPLICATION_JSON)
-				.exchange()
-				.expectStatus().isEqualTo(UNPROCESSABLE_CONTENT)
-				.expectHeader().contentType(APPLICATION_JSON)
-				.expectBody()
-				.jsonPath("$.path").isEqualTo("/recommendation")
-				.jsonPath("$.message").isEqualTo("Invalid productId: " + productIdInvalid);
-	}
+    sendDeleteRecommendationEvent(productId);
+    assertEquals(0, repository.findByProductId(productId).collectList().block().size());
+
+    sendDeleteRecommendationEvent(productId);
+  }
+
+  @Test
+  void getRecommendationsMissingParameter() {
+
+    getAndVerifyRecommendationsByProductId("", BAD_REQUEST)
+      .jsonPath("$.path").isEqualTo("/recommendation")
+      .jsonPath("$.message").isEqualTo("Required query parameter 'productId' is not present.");
+  }
+
+  @Test
+  void getRecommendationsInvalidParameter() {
+
+    getAndVerifyRecommendationsByProductId("?productId=no-integer", BAD_REQUEST)
+      .jsonPath("$.path").isEqualTo("/recommendation")
+      .jsonPath("$.message").isEqualTo("Type mismatch.");
+  }
+
+  @Test
+  void getRecommendationsNotFound() {
+
+    getAndVerifyRecommendationsByProductId("?productId=113", OK)
+      .jsonPath("$.length()").isEqualTo(0);
+  }
+
+  @Test
+  void getRecommendationsInvalidParameterNegativeValue() {
+
+    int productIdInvalid = -1;
+
+    getAndVerifyRecommendationsByProductId("?productId=" + productIdInvalid, UNPROCESSABLE_CONTENT)
+      .jsonPath("$.path").isEqualTo("/recommendation")
+      .jsonPath("$.message").isEqualTo("Invalid productId: " + productIdInvalid);
+  }
+
+  private WebTestClient.BodyContentSpec getAndVerifyRecommendationsByProductId(int productId, HttpStatus expectedStatus) {
+    return getAndVerifyRecommendationsByProductId("?productId=" + productId, expectedStatus);
+  }
+
+  private WebTestClient.BodyContentSpec getAndVerifyRecommendationsByProductId(String productIdQuery, HttpStatus expectedStatus) {
+    return client.get()
+      .uri("/recommendation" + productIdQuery)
+      .accept(APPLICATION_JSON)
+      .exchange()
+      .expectStatus().isEqualTo(expectedStatus)
+      .expectHeader().contentType(APPLICATION_JSON)
+      .expectBody();
+  }
+
+  private void sendCreateRecommendationEvent(int productId, int recommendationId) {
+    Recommendation recommendation = new Recommendation(productId, recommendationId, "Author " + recommendationId, recommendationId, "Content " + recommendationId, "SA");
+    Event<Integer, Recommendation> event = new Event<>(CREATE, productId, recommendation);
+    messageProcessor.accept(event);
+  }
+
+  private void sendDeleteRecommendationEvent(int productId) {
+    Event<Integer, Recommendation> event = new Event<>(DELETE, productId, null);
+    messageProcessor.accept(event);
+  }
 }
